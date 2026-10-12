@@ -56,7 +56,7 @@ That's it — the screen updates automatically every 2 seconds.
 |---|---|
 | **Auto-update** | Toggle the refresh loop on/off |
 | **Refresh interval** | 1s / 2s / 5s / 10s |
-| **Layout** | *Clean* (big art left) · *Cover top* (art fills top) · *Progress* (progress bar + timestamps) |
+| **Layout** | *Clean* (big art left) · *Cover top* (art fills top) · *Progress* (progress bar + timestamps) · *Ambient* (Clean on a gradient themed to the album art) |
 | **Art fit** *(Cover top only)* | *Zoom* (crop to fill) · *Blur sides* (blurred bg + crisp centre) · *Stretch* |
 | **Rounded art corners** | Applies to all layouts |
 
