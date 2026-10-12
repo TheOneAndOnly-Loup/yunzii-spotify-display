@@ -73,12 +73,20 @@ The keyboard exposes a 160×96 RGB565 framebuffer over WebHID. The protocol (rev
 
 The app draws the current track onto a hidden `<canvas>`, converts it to RGB565, and sends the full sequence every 2 seconds.
 
+A few details:
+
+- **Album art** uses Spotify's 300px cover, downscaled to 160px through the [weserv.nl](https://images.weserv.nl) image proxy (needed so the canvas can read the pixels).
+- **Caching:** each cover is downloaded once per track and kept in memory (last 8 covers) along with its colour palette, so refreshes don't re-download it. The cache lives only while the page is open.
+- **Ambient colours** are picked by sampling the cover at 32×32, grouping similar colours, and favouring common, saturated ones. They're then darkened for the gradient so white text stays readable.
+- **Dithering:** a 4×4 ordered dither is applied during the RGB565 conversion to avoid visible banding on gradients.
+
 ---
 
 ## Privacy
 
 - Your Client ID is stored only in your browser's `localStorage` — it never leaves your machine
 - Spotify tokens are also stored in `localStorage` and only used to call Spotify's API
+- Album cover URLs (public Spotify image links, nothing tied to your account) are fetched through the images.weserv.nl proxy
 - No analytics, no tracking, no server
 
 ---
