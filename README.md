@@ -58,6 +58,8 @@ That's it — the page checks Spotify every second and updates the screen whenev
 | **Update interval** | How often Spotify is checked: **1s** (default) / 2s / 5s / 10s. Checking is cheap — the keyboard is only pushed when something changes |
 | **Layout** | *Clean* (big art left) · *Cover top* (art fills top) · *Progress* (progress bar + timestamps) · *Ambient* (Clean on a gradient themed to the album art) |
 | **Art fit** *(Cover top only)* | *Zoom* (crop to fill) · *Blur sides* (blurred bg + crisp centre) · *Stretch* |
+| **Background** *(Ambient only)* | *Gradient* (fades between two colours from the cover) · *Solid* (one colour from the cover, matched exactly to a colour the screen can show — perfectly clean, no steps or dots) |
+| **Dithering** *(Ambient only)* | How in-between shades are faked on gradients and album art: *Pattern* (regular dot pattern) · *Smooth* (fine, irregular grain) · *Off* (no dots, but gradients show visible steps). Other layouts use *Pattern* |
 | **Rounded art corners** | Applies to all layouts |
 | **Push Now** | Fetches the current track and pushes it immediately, even if nothing changed |
 | **Push Custom Image** | Sends any image file to the screen (stays until the song changes) |
@@ -86,7 +88,8 @@ A few details:
 - **Album art** uses Spotify's 300px cover, downscaled to 160px through the [weserv.nl](https://images.weserv.nl) image proxy (needed so the canvas can read the pixels).
 - **Caching:** each cover is downloaded once per track and kept in memory (last 8 covers) along with its colour palette, so refreshes don't re-download it. The cache lives only while the page is open.
 - **Ambient colours** are picked by sampling the cover at 32×32, grouping similar colours, and favouring common, saturated ones. They're then darkened for the gradient so white text stays readable.
-- **Dithering:** a 4×4 ordered dither is applied during the RGB565 conversion to avoid visible banding on gradients.
+- **Colours and dithering:** the screen uses RGB565 — 32 levels of red and blue, 64 of green (~65,000 colours). Dark, slow gradients fall between those levels, so they show either steps or dither dots; that's why Ambient offers a *Solid* background and a choice of dithering (ordered 4×4 pattern, Floyd–Steinberg error diffusion, or none). Colours the screen can show exactly are never dithered.
+- **Preview:** the on-page preview shows what the keyboard actually receives (reduced colours + dithering), not the full-colour drawing.
 
 ---
 
