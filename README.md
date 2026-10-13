@@ -88,7 +88,7 @@ A few details:
 - **Album art** uses Spotify's 300px cover, downscaled to 160px through the [weserv.nl](https://images.weserv.nl) image proxy (needed so the canvas can read the pixels).
 - **Caching:** each cover is downloaded once per track and kept in memory (last 8 covers) along with its colour palette, so refreshes don't re-download it. The cache lives only while the page is open.
 - **Ambient colours** are picked by sampling the cover at 32×32, grouping similar colours, and favouring common, saturated ones. They're then darkened for the gradient so white text stays readable.
-- **Colours and dithering:** the screen uses RGB565 — 32 levels of red and blue, 64 of green (~65,000 colours). Dark, slow gradients fall between those levels, so they show either steps or dither dots; that's why Ambient offers a *Solid* background and a choice of dithering (ordered 4×4 pattern, Floyd–Steinberg error diffusion, or none). Colours the screen can show exactly are never dithered.
+- **Colours and dithering:** the screen uses RGB565 — 32 levels of red and blue, 64 of green (~65,000 colours). Dark, slow gradients fall between those levels, so they show either steps or dither dots; that's why Ambient offers a *Solid* background and a choice of dithering (ordered 4×4 pattern, Floyd–Steinberg error diffusion, or none). With the *Solid* background, colours the screen can show exactly are left undithered so it stays one clean colour.
 - **Preview:** the on-page preview shows what the keyboard actually receives (reduced colours + dithering), not the full-colour drawing.
 
 ---
