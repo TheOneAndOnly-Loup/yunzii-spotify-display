@@ -212,7 +212,7 @@
     </div>
   </div>
   <div class="btn-row" style="margin-top:14px;">
-    <button class="btn btn-primary" id="pushBtn" onclick="pushNow()" disabled>Push Now</button>
+    <button class="btn btn-primary" id="pushBtn" onclick="pushNow(true)" disabled>Push Now</button>
     <button class="btn btn-ghost" onclick="pushCustom()">Push Custom Image</button>
   </div>
 </div>
@@ -246,6 +246,7 @@ let layoutMode     = 0; // 0=clean side, 1=cover top, 2=progress, 3=ambient (cle
 let coverFitMode   = 1; // 0=stretch, 1=zoom+crop, 2=blur sides
 let roundedArt     = false;
 let pushing        = false; // prevent overlapping pushes
+let lastScreenKey  = null;  // what the keyboard is showing — it keeps its image, so we only push on change
 
 // ─── Log ──────────────────────────────────────────────────────────────────────
 function log(msg, type = 'info') {
@@ -415,14 +416,15 @@ async function connectKeyboard() {
     document.getElementById('stepKbd').classList.add('done');
     checkReady();
 
+    lastScreenKey = null; // fresh connection: screen content unknown
     if (localStorage.getItem('spotify_access_token')) {
       log('Spotify ready — pushing now playing…', 'info');
-      try { await pushNow(); } catch(e) { log('First push failed: ' + e.message, 'err'); }
+      try { await pushNow(true); } catch(e) { log('First push failed: ' + e.message, 'err'); }
     } else {
       drawIdleScreen();
-      try { await pushCanvas(); } catch(e) {}
+      try { if (await pushCanvas()) lastScreenKey = screenKey(null); } catch(e) {}
     }
-    // Always start auto-refresh after connecting — keyboard clears screen after ~3s without a push
+    // Start watching Spotify — the screen is only re-pushed when what it shows changes
     if (!autoUpdate) toggleAuto();
   } catch(e) {
     log(`Keyboard error: ${e.message}`, 'err');
@@ -452,7 +454,8 @@ function canvasToRGB565(canvas) {
   return out;
 }
 
-// Timeout wrapper — without this, one hung packet blocks forever
+// Timeout wrapper — without this, one hung packet blocks forever.
+// Returns false on timeout so the caller knows the frame may be incomplete.
 async function sendPacket(device, data) {
   const pkt = new Uint8Array(64);
   pkt.set(data);
@@ -461,18 +464,21 @@ async function sendPacket(device, data) {
       device.sendReport(0, pkt),
       new Promise((_, rej) => setTimeout(() => rej(new Error('HID timeout')), 250))
     ]);
+    return true;
   } catch(e) {
     if (!e.message.includes('timeout')) throw e;
     // Timeouts are non-fatal — keyboard occasionally needs a moment
+    return false;
   }
 }
 
-
-
+// Returns true only if every packet of the frame went through
 async function pushImageData(rgb565) {
-  if (!kbdDevice) { log('No keyboard connected', 'err'); return; }
-  if (pushing)    { return; } // skip if already mid-push
+  if (!kbdDevice) { log('No keyboard connected', 'err'); return false; }
+  if (pushing)    { return false; } // skip if already mid-push
   pushing = true;
+  let ok = true;
+  const send = async pkt => { if (!await sendPacket(kbdDevice, pkt)) ok = false; };
   try {
     const CHUNK = 56;
 
@@ -485,7 +491,7 @@ async function pushImageData(rgb565) {
       ip[4]=0xcf; ip[5]=0x02;
       ip[7]=0xa5; ip[8]=0x5a; ip[9]=0x10; ip[11]=0x01;
       ip[12]=0xc5; ip[13]=0xb1; ip[14]=0x01;
-      await sendPacket(kbdDevice, ip);
+      await send(ip);
       await sleep(20);
     }
 
@@ -494,7 +500,7 @@ async function pushImageData(rgb565) {
     hp[0]=0x41; hp[3]=0x07; hp[4]=0x21; hp[5]=0x03;
     hp[7]=0xa5; hp[8]=0x5a; hp[9]=0x0c; hp[10]=0x78;
     hp[12]=0xc3; hp[13]=0x93;
-    await sendPacket(kbdDevice, hp);
+    await send(hp);
     await sleep(10);
 
     // 0x41 pixel data chunks
@@ -508,7 +514,7 @@ async function pushImageData(rgb565) {
       pkt[3]=sz&0xFF;
       pkt[4]=(0x41+pkt[1]+pkt[2]+pkt[3])&0xFF;
       pkt.set(chunk, 6);
-      await sendPacket(kbdDevice, pkt);
+      await send(pkt);
       offset += sz; n++;
       if (n % 16 === 0) await sleep(2);
     }
@@ -516,18 +522,26 @@ async function pushImageData(rgb565) {
     // 0x42 commit
     const ep = new Uint8Array(64);
     ep[0]=0x42; ep[3]=0x38; ep[4]=(0x42+0x38)&0xFF;
-    await sendPacket(kbdDevice, ep);
+    await send(ep);
     await sleep(5);
 
+    if (!ok) log('Some packets timed out — will resend the frame', 'err');
+    return ok;
   } finally {
     pushing = false;
   }
 }
 
+// The keyboard only displays every other frame it receives, and a lone frame after a pause
+// shows up white. Sending each frame twice back to back makes it display reliably (tested).
 async function pushCanvas() {
   const canvas = document.getElementById('renderCanvas');
-  await pushImageData(canvasToRGB565(canvas));
+  const rgb565 = canvasToRGB565(canvas);
+  let ok = await pushImageData(rgb565);
+  await sleep(50);
+  ok = await pushImageData(rgb565) && ok;
   document.getElementById('previewCanvas').getContext('2d').drawImage(canvas, 0, 0);
+  return ok;
 }
 
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
@@ -879,13 +893,31 @@ function updateNowPlayingUI(track) {
 }
 
 // ─── Controls ─────────────────────────────────────────────────────────────────
-async function pushNow() {
+// Everything that affects what's drawn. If it hasn't changed, the keyboard already shows the
+// right image (it keeps it indefinitely), so there's nothing to push.
+function screenKey(track) {
+  if (!track) return 'idle';
+  return [track.id, track.isPlaying, layoutMode, coverFitMode, roundedArt,
+          layoutMode === 2 ? Math.floor(track.progress / 1000) : 0].join('|'); // Progress layout ticks
+}
+
+async function pushNow(force = false) {
   const track = await fetchCurrentTrack();
   updateNowPlayingUI(track);
-  if (track) { currentTrack = track; await drawTrackScreen(track); }
+  if (track) currentTrack = track;
+  const key = screenKey(track);
+  if (!force && kbdDevice && key === lastScreenKey) return;
+  if (track) await drawTrackScreen(track);
   else drawIdleScreen();
-  if (kbdDevice) await pushCanvas();
+  if (kbdDevice) { if (await pushCanvas()) lastScreenKey = key; }
   else log('Preview only (no keyboard)', 'info');
+}
+
+// Redraw after a display setting changes, and push it right away
+async function redraw() {
+  if (!currentTrack) { drawIdleScreen(); return; }
+  await drawTrackScreen(currentTrack);
+  if (kbdDevice && await pushCanvas()) lastScreenKey = screenKey(currentTrack);
 }
 
 function pushCustom() { document.getElementById('fileInput').click(); }
@@ -918,8 +950,7 @@ function cycleLayout() {
   document.getElementById('layoutLabel').textContent = labels[layoutMode];
   document.getElementById('fitRow').style.display = layoutMode === 1 ? 'flex' : 'none';
   log('Layout: ' + labels[layoutMode], 'info');
-  if (currentTrack) { drawTrackScreen(currentTrack).then(() => { if (kbdDevice) pushCanvas(); }); }
-  else drawIdleScreen();
+  redraw();
 }
 
 function cycleFit() {
@@ -927,15 +958,14 @@ function cycleFit() {
   const labels = ['Stretch', 'Zoom', 'Blur sides'];
   document.getElementById('fitLabel').textContent = labels[coverFitMode];
   log('Art fit: ' + labels[coverFitMode], 'info');
-  if (currentTrack) { drawTrackScreen(currentTrack).then(() => { if (kbdDevice) pushCanvas(); }); }
+  redraw();
 }
 
 function toggleRounded() {
   roundedArt = !roundedArt;
   document.getElementById('roundedToggle').className = 'toggle' + (roundedArt ? ' on' : '');
   log('Rounded corners ' + (roundedArt ? 'ON' : 'OFF'), 'info');
-  if (currentTrack) { drawTrackScreen(currentTrack).then(() => { if (kbdDevice) pushCanvas(); }); }
-  else drawIdleScreen();
+  redraw();
 }
 
 // Helper: clip a rounded rect region before drawing into it

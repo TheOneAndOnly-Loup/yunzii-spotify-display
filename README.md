@@ -44,7 +44,7 @@ Click **Login with Spotify** and authorise the app. The page will redirect back 
 
 Plug in your Yunzii B75 Pro Max via USB, then click **Connect Keyboard** in Step 2. Select the keyboard from the browser prompt.
 
-That's it — the screen updates automatically every 2 seconds.
+That's it — the page checks Spotify every 2 seconds and updates the screen whenever the song changes.
 
 > **Order matters:** always log in to Spotify before connecting the keyboard. The OAuth redirect resets any HID connection.
 
@@ -54,8 +54,8 @@ That's it — the screen updates automatically every 2 seconds.
 
 | Control | Description |
 |---|---|
-| **Auto-update** | Toggle the refresh loop on/off |
-| **Refresh interval** | 1s / 2s / 5s / 10s |
+| **Auto-update** | Toggle watching Spotify on/off |
+| **Update interval** | How often Spotify is checked: 1s / 2s / 5s / 10s (the keyboard is only pushed when something changes) |
 | **Layout** | *Clean* (big art left) · *Cover top* (art fills top) · *Progress* (progress bar + timestamps) · *Ambient* (Clean on a gradient themed to the album art) |
 | **Art fit** *(Cover top only)* | *Zoom* (crop to fill) · *Blur sides* (blurred bg + crisp centre) · *Stretch* |
 | **Rounded art corners** | Applies to all layouts |
@@ -71,10 +71,12 @@ The keyboard exposes a 160×96 RGB565 framebuffer over WebHID. The protocol (rev
 3. **`0x41` × 549** — pixel data chunks (56 bytes of RGB565 each, with offset + checksum header)
 4. **`0x42`** — commit (display the frame)
 
-The app draws the current track onto a hidden `<canvas>`, converts it to RGB565, and sends the full sequence every 2 seconds.
+The app draws the current track onto a hidden `<canvas>`, converts it to RGB565, and sends the full sequence.
 
 A few details:
 
+- **Push on change:** the screen keeps the last frame it received (in RAM — it's not saved, and replugging restores the default screen), so a frame is only sent when what it shows changes: a new song, play/pause, nothing playing, or a display setting. The *Progress* layout is the exception, since its bar moves every second. If any packet times out, the frame is resent on the next check so a half-sent image never sticks.
+- **Double send:** the keyboard only displays every other frame it receives, and a single frame after a pause shows up white. Each frame is therefore sent twice back to back, which displays reliably.
 - **Album art** uses Spotify's 300px cover, downscaled to 160px through the [weserv.nl](https://images.weserv.nl) image proxy (needed so the canvas can read the pixels).
 - **Caching:** each cover is downloaded once per track and kept in memory (last 8 covers) along with its colour palette, so refreshes don't re-download it. The cache lives only while the page is open.
 - **Ambient colours** are picked by sampling the cover at 32×32, grouping similar colours, and favouring common, saturated ones. They're then darkened for the gradient so white text stays readable.
@@ -95,7 +97,6 @@ A few details:
 
 - Chrome only — WebHID is not available in Firefox or Safari
 - The page must stay open in a window (minimising doesn't work, but you can keep the the window open in the background and use another window to browse the internet)
-- The keyboard screen resets after a few seconds without a push — hence the 2s auto-refresh
 - The keyboard must ALWAYS be connected using a usb cable. 
 
 ---
