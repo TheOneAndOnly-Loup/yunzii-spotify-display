@@ -485,21 +485,28 @@ const BAYER4 = [0,8,2,10, 12,4,14,6, 3,11,1,9, 15,7,13,5];
 // Only Ambient lets you choose; other layouts use the pattern.
 function currentDither() { return layoutMode === 3 ? ambientDither : 'pattern'; }
 
-function canvasToRGB565(canvas, mode = currentDither()) {
+// keepExact: leave colours the screen shows exactly undithered — only needed for Ambient's
+// Solid background; everywhere else the original pattern is kept bit-for-bit
+function canvasToRGB565(canvas, mode = currentDither(), keepExact = layoutMode === 3 && ambientBg === 'solid') {
   const px  = canvas.getContext('2d').getImageData(0, 0, 160, 96).data;
   const out = new Uint8Array(160 * 96 * 2);
   const err = mode === 'smooth' ? new Float32Array(160 * 96 * 3) : null;
   for (let i = 0; i < 160 * 96; i++) {
     const x = i % 160, y = i / 160 | 0;
+    // 8-bit values can't hit levels exactly (e.g. level 3 = 24.7 → stored as 25), so anything
+    // within half an 8-bit step of a level counts as exact
+    const raw   = [0, 1, 2].map(c => toLevels(px[i*4 + c], c));
+    const exact = raw.map((v, c) => Math.abs(v - Math.round(v)) <= LEVEL_MAX[c] / 510 + 1e-6);
     const lv = [0, 1, 2].map(c => {
-      let v = toLevels(px[i*4 + c], c);
-      // 8-bit values can't hit levels exactly (e.g. level 3 = 24.7 → stored as 25); treat
-      // anything that close as exact, otherwise dithering would sprinkle dots on solid colours
-      if (Math.abs(v - Math.round(v)) <= LEVEL_MAX[c] / 510 + 1e-6) v = Math.round(v); // half an 8-bit step
+      let v = raw[c];
       if (mode === 'pattern') {
-        // threshold in (0,1): exact levels stay put, in-between values become a dot mix
-        return Math.min(LEVEL_MAX[c], Math.floor(v + (BAYER4[(y & 3) * 4 + (x & 3)] + 0.5) / 16));
+        if (keepExact && exact[0] && exact[1] && exact[2]) return Math.round(v);
+        // Original ordered dither, unchanged: offset by the 4×4 map in 8-bit, then truncate
+        const t = BAYER4[(y & 3) * 4 + (x & 3)] / 16 - 0.5;
+        const p = Math.min(255, Math.max(0, px[i*4 + c] + t * (c === 1 ? 4 : 8)));
+        return c === 1 ? p >> 2 : p >> 3;
       }
+      if (exact[c]) v = Math.round(v); // otherwise dithering would sprinkle dots on solid colours
       if (mode === 'smooth') {
         const want = v + err[i*3 + c];
         const l = Math.min(LEVEL_MAX[c], Math.max(0, Math.round(want)));
