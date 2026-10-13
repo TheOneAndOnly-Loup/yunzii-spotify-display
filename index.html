@@ -102,6 +102,7 @@
   .log .ok { color: var(--accent); }
   .log .err { color: var(--accent2); }
   .log .info { color: #666; }
+  .log .dbg { color: #4a6a8a; }
 
 
   ::-webkit-scrollbar { width: 4px; }
@@ -221,6 +222,10 @@
 <div class="card">
   <div class="card-title">Log</div>
   <div class="log" id="log"></div>
+  <div class="toggle-row" style="margin-top:10px;">
+    <span class="toggle-label">Debug messages (every check, push, timing)</span>
+    <button class="toggle" id="debugToggle" onclick="toggleDebug()"></button>
+  </div>
   <div class="btn-row" style="margin-top:8px;">
     <button class="btn btn-ghost" style="font-size:0.55rem;" onclick="clearLog()">Clear</button>
   </div>
@@ -247,15 +252,30 @@ let coverFitMode   = 1; // 0=stretch, 1=zoom+crop, 2=blur sides
 let roundedArt     = false;
 let pushing        = false; // prevent overlapping pushes
 let lastScreenKey  = null;  // what the keyboard is showing — it keeps its image, so we only push on change
+let pushCount      = 0;     // frames pushed this session (each push = 2 frames, see pushCanvas)
+let debugLog       = localStorage.getItem('debug_log') === '1';
 
 // ─── Log ──────────────────────────────────────────────────────────────────────
+const LOG_MAX_LINES = 500; // debug mode logs every check — keep the panel from growing forever
+
 function log(msg, type = 'info') {
   const el   = document.getElementById('log');
   const line = document.createElement('div');
   line.className   = type;
   line.textContent = `${new Date().toLocaleTimeString()} · ${msg}`;
   el.appendChild(line);
+  while (el.childElementCount > LOG_MAX_LINES) el.firstElementChild.remove();
   el.scrollTop = el.scrollHeight;
+}
+
+// Only shown when the Debug toggle is on
+function dbg(msg) { if (debugLog) log(msg, 'dbg'); }
+
+function toggleDebug() {
+  debugLog = !debugLog;
+  localStorage.setItem('debug_log', debugLog ? '1' : '0');
+  document.getElementById('debugToggle').className = 'toggle' + (debugLog ? ' on' : '');
+  log('Debug messages ' + (debugLog ? 'ON' : 'OFF'), 'info');
 }
 
 // ─── PKCE ─────────────────────────────────────────────────────────────────────
@@ -475,10 +495,10 @@ async function sendPacket(device, data) {
 // Returns true only if every packet of the frame went through
 async function pushImageData(rgb565) {
   if (!kbdDevice) { log('No keyboard connected', 'err'); return false; }
-  if (pushing)    { return false; } // skip if already mid-push
+  if (pushing)    { dbg('Frame skipped — previous push still in progress'); return false; }
   pushing = true;
-  let ok = true;
-  const send = async pkt => { if (!await sendPacket(kbdDevice, pkt)) ok = false; };
+  let ok = true, timeouts = 0;
+  const send = async pkt => { if (!await sendPacket(kbdDevice, pkt)) { ok = false; timeouts++; } };
   try {
     const CHUNK = 56;
 
@@ -525,7 +545,7 @@ async function pushImageData(rgb565) {
     await send(ep);
     await sleep(5);
 
-    if (!ok) log('Some packets timed out — will resend the frame', 'err');
+    if (!ok) log(`${timeouts} packet(s) timed out — will resend the frame`, 'err');
     return ok;
   } finally {
     pushing = false;
@@ -537,9 +557,12 @@ async function pushImageData(rgb565) {
 async function pushCanvas() {
   const canvas = document.getElementById('renderCanvas');
   const rgb565 = canvasToRGB565(canvas);
+  const t0 = performance.now();
   let ok = await pushImageData(rgb565);
   await sleep(50);
   ok = await pushImageData(rgb565) && ok;
+  pushCount++;
+  dbg(`Push #${pushCount}: frame sent ×2 in ${Math.round(performance.now() - t0)}ms` + (ok ? '' : ' (incomplete)'));
   document.getElementById('previewCanvas').getContext('2d').drawImage(canvas, 0, 0);
   return ok;
 }
@@ -765,8 +788,13 @@ function loadImage(url) {
 const artCache = new Map(); // artUrl -> Promise<{ img, palette }>
 function loadArt(url) {
   if (!artCache.has(url)) {
-    const p = loadImage(url).then(img => ({ img, palette: extractPalette(img) }));
-    p.catch(() => artCache.delete(url));
+    const t0 = performance.now();
+    dbg('Album art: downloading');
+    const p = loadImage(url).then(img => {
+      dbg(`Album art: loaded in ${Math.round(performance.now() - t0)}ms`);
+      return { img, palette: extractPalette(img) };
+    });
+    p.catch(() => { artCache.delete(url); log('Album art failed to load — will retry', 'err'); });
     artCache.set(url, p);
     while (artCache.size > 8) artCache.delete(artCache.keys().next().value);
   }
@@ -855,6 +883,7 @@ async function fetchCurrentTrack() {
     });
     if (res.status === 204) return null;
     if (res.status === 401) {
+      dbg('Spotify: access token rejected (401) — refreshing');
       const ok = await refreshAccessToken();
       return ok ? fetchCurrentTrack() : null;
     }
@@ -901,12 +930,30 @@ function screenKey(track) {
           layoutMode === 2 ? Math.floor(track.progress / 1000) : 0].join('|'); // Progress layout ticks
 }
 
+// Why the screen needs a new frame, for the debug log
+function changeReason(prev, next) {
+  if (!prev) return 'first push';
+  if (next === 'idle') return 'nothing playing';
+  if (prev === 'idle') return 'playback started';
+  const [pid, pplay] = prev.split('|'), [nid, nplay] = next.split('|');
+  if (pid !== nid) return 'new song';
+  if (pplay !== nplay) return nplay === 'true' ? 'resumed' : 'paused';
+  return layoutMode === 2 ? 'progress bar tick' : 'display setting';
+}
+
 async function pushNow(force = false) {
+  const t0 = performance.now();
   const track = await fetchCurrentTrack();
+  const ms = Math.round(performance.now() - t0);
   updateNowPlayingUI(track);
   if (track) currentTrack = track;
   const key = screenKey(track);
-  if (!force && kbdDevice && key === lastScreenKey) return;
+  const what = track ? `"${track.name}" ${track.isPlaying ? 'playing' : 'paused'}` : 'nothing playing';
+  if (!force && kbdDevice && key === lastScreenKey) {
+    dbg(`Check (${ms}ms): ${what} — no change, not pushing`);
+    return;
+  }
+  dbg(`Check (${ms}ms): ${what} — pushing (${force ? 'manual' : changeReason(lastScreenKey, key)})`);
   if (track) await drawTrackScreen(track);
   else drawIdleScreen();
   if (kbdDevice) { if (await pushCanvas()) lastScreenKey = key; }
@@ -916,6 +963,7 @@ async function pushNow(force = false) {
 // Redraw after a display setting changes, and push it right away
 async function redraw() {
   if (!currentTrack) { drawIdleScreen(); return; }
+  dbg('Display setting changed — pushing');
   await drawTrackScreen(currentTrack);
   if (kbdDevice && await pushCanvas()) lastScreenKey = screenKey(currentTrack);
 }
@@ -1020,6 +1068,7 @@ async function init() {
     const inp = document.getElementById('clientIdInput');
     if (inp) inp.value = saved;
   }
+  document.getElementById('debugToggle').className = 'toggle' + (debugLog ? ' on' : '');
   drawIdleScreen();
   log('Ready.', 'info');
 
