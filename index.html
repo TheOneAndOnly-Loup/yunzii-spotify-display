@@ -206,8 +206,8 @@
   <div style="margin-top:8px;">
     <div class="hint" style="margin-bottom:6px;">Update interval:</div>
     <div class="interval-row">
-      <button class="interval-btn" onclick="setIntervalVal(1000,this)">1s</button>
-      <button class="interval-btn active" onclick="setIntervalVal(2000,this)">2s</button>
+      <button class="interval-btn active" onclick="setIntervalVal(1000,this)">1s</button>
+      <button class="interval-btn" onclick="setIntervalVal(2000,this)">2s</button>
       <button class="interval-btn" onclick="setIntervalVal(5000,this)">5s</button>
       <button class="interval-btn" onclick="setIntervalVal(10000,this)">10s</button>
     </div>
@@ -245,7 +245,7 @@ let kbdDevice      = null;
 let accessToken    = null;
 let autoUpdate     = false;
 let autoTimer      = null;
-let updateInterval = 2000;
+let updateInterval = 1000; // how often Spotify is checked — cheap, since the keyboard is only pushed on change
 let currentTrack   = null;
 let layoutMode     = 0; // 0=clean side, 1=cover top, 2=progress, 3=ambient (clean + album-themed gradient)
 let coverFitMode   = 1; // 0=stretch, 1=zoom+crop, 2=blur sides
@@ -441,8 +441,9 @@ async function connectKeyboard() {
       log('Spotify ready — pushing now playing…', 'info');
       try { await pushNow(true); } catch(e) { log('First push failed: ' + e.message, 'err'); }
     } else {
-      drawIdleScreen();
-      try { if (await pushCanvas()) lastScreenKey = screenKey(null); } catch(e) {}
+      try {
+        await exclusive(async () => { drawIdleScreen(); if (await pushCanvas()) lastScreenKey = screenKey(null); });
+      } catch(e) {}
     }
     // Start watching Spotify — the screen is only re-pushed when what it shows changes
     if (!autoUpdate) toggleAuto();
@@ -941,6 +942,15 @@ function changeReason(prev, next) {
   return layoutMode === 2 ? 'progress bar tick' : 'display setting';
 }
 
+// Draw + push jobs run one at a time, in order. Two at once would interleave frames on the
+// keyboard (which only shows every other frame) and draw over each other on the canvas.
+let screenQueue = Promise.resolve();
+function exclusive(job) {
+  const run = screenQueue.then(job);
+  screenQueue = run.catch(() => {});
+  return run;
+}
+
 async function pushNow(force = false) {
   const t0 = performance.now();
   const track = await fetchCurrentTrack();
@@ -949,23 +959,31 @@ async function pushNow(force = false) {
   if (track) currentTrack = track;
   const key = screenKey(track);
   const what = track ? `"${track.name}" ${track.isPlaying ? 'playing' : 'paused'}` : 'nothing playing';
-  if (!force && kbdDevice && key === lastScreenKey) {
-    dbg(`Check (${ms}ms): ${what} — no change, not pushing`);
-    return;
-  }
-  dbg(`Check (${ms}ms): ${what} — pushing (${force ? 'manual' : changeReason(lastScreenKey, key)})`);
-  if (track) await drawTrackScreen(track);
-  else drawIdleScreen();
-  if (kbdDevice) { if (await pushCanvas()) lastScreenKey = key; }
-  else log('Preview only (no keyboard)', 'info');
+  await exclusive(async () => {
+    // Compared inside the queue, so a push that just finished (e.g. a setting change) counts
+    if (!force && kbdDevice && key === lastScreenKey) {
+      dbg(`Check (${ms}ms): ${what} — no change, not pushing`);
+      return;
+    }
+    dbg(`Check (${ms}ms): ${what} — pushing (${force ? 'manual' : changeReason(lastScreenKey, key)})`);
+    if (track) await drawTrackScreen(track);
+    else drawIdleScreen();
+    if (kbdDevice) { if (await pushCanvas()) lastScreenKey = key; }
+    else log('Preview only (no keyboard)', 'info');
+  });
 }
 
 // Redraw after a display setting changes, and push it right away
-async function redraw() {
-  if (!currentTrack) { drawIdleScreen(); return; }
-  dbg('Display setting changed — pushing');
-  await drawTrackScreen(currentTrack);
-  if (kbdDevice && await pushCanvas()) lastScreenKey = screenKey(currentTrack);
+function redraw() {
+  return exclusive(async () => {
+    // Capture the track now: a check can replace currentTrack while this push is running,
+    // and lastScreenKey must describe what was actually sent
+    const track = currentTrack;
+    if (!track) { drawIdleScreen(); return; }
+    dbg('Display setting changed — pushing');
+    await drawTrackScreen(track);
+    if (kbdDevice && await pushCanvas()) lastScreenKey = screenKey(track);
+  });
 }
 
 function pushCustom() { document.getElementById('fileInput').click(); }
@@ -977,11 +995,13 @@ async function handleFile(e) {
     const i = new Image(); i.onload = ()=>res(i); i.onerror = rej;
     i.src = URL.createObjectURL(file);
   });
-  const canvas = document.getElementById('renderCanvas');
-  canvas.getContext('2d').drawImage(img, 0, 0, 160, 96);
-  document.getElementById('previewCanvas').getContext('2d').drawImage(canvas, 0, 0);
-  if (kbdDevice) { log(`Pushing ${file.name}`, 'info'); await pushCanvas(); }
-  else log('Preview only', 'info');
+  await exclusive(async () => {
+    const canvas = document.getElementById('renderCanvas');
+    canvas.getContext('2d').drawImage(img, 0, 0, 160, 96);
+    document.getElementById('previewCanvas').getContext('2d').drawImage(canvas, 0, 0);
+    if (kbdDevice) { log(`Pushing ${file.name}`, 'info'); await pushCanvas(); }
+    else log('Preview only', 'info');
+  });
   e.target.value = '';
 }
 

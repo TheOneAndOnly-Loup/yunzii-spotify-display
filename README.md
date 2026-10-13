@@ -44,7 +44,7 @@ Click **Login with Spotify** and authorise the app. The page will redirect back 
 
 Plug in your Yunzii B75 Pro Max via USB, then click **Connect Keyboard** in Step 2. Select the keyboard from the browser prompt.
 
-That's it — the page checks Spotify every 2 seconds and updates the screen whenever the song changes.
+That's it — the page checks Spotify every second and updates the screen whenever the song changes.
 
 > **Order matters:** always log in to Spotify before connecting the keyboard. The OAuth redirect resets any HID connection.
 
@@ -55,10 +55,13 @@ That's it — the page checks Spotify every 2 seconds and updates the screen whe
 | Control | Description |
 |---|---|
 | **Auto-update** | Toggle watching Spotify on/off |
-| **Update interval** | How often Spotify is checked: 1s / 2s / 5s / 10s (the keyboard is only pushed when something changes) |
+| **Update interval** | How often Spotify is checked: **1s** (default) / 2s / 5s / 10s. Checking is cheap — the keyboard is only pushed when something changes |
 | **Layout** | *Clean* (big art left) · *Cover top* (art fills top) · *Progress* (progress bar + timestamps) · *Ambient* (Clean on a gradient themed to the album art) |
 | **Art fit** *(Cover top only)* | *Zoom* (crop to fill) · *Blur sides* (blurred bg + crisp centre) · *Stretch* |
 | **Rounded art corners** | Applies to all layouts |
+| **Push Now** | Fetches the current track and pushes it immediately, even if nothing changed |
+| **Push Custom Image** | Sends any image file to the screen (stays until the song changes) |
+| **Debug messages** *(Log card)* | Shows every Spotify check (timing, what's playing, pushed or skipped and why), every push with a running count and how long it took, and album art downloads. Remembered between visits. The log keeps the last 500 lines |
 
 ---
 
@@ -77,10 +80,25 @@ A few details:
 
 - **Push on change:** the screen keeps the last frame it received (in RAM — it's not saved, and replugging restores the default screen), so a frame is only sent when what it shows changes: a new song, play/pause, nothing playing, or a display setting. The *Progress* layout is the exception, since its bar moves every second. If any packet times out, the frame is resent on the next check so a half-sent image never sticks.
 - **Double send:** the keyboard only displays every other frame it receives, and a single frame after a pause shows up white. Each frame is therefore sent twice back to back, which displays reliably.
+- **Push timing:** a push takes about 1.5 s. A frame is 30 KB, sent as ~551 packets of 64 bytes, and the keyboard's USB connection accepts roughly one packet per millisecond — then it's sent twice. So expect the screen to update 1–2.5 s after a song change.
+- **One push at a time:** drawing and pushing are queued, so a setting change and a Spotify check happening at the same moment can't interleave their frames.
+- **Keyboard replies:** the keyboard echoes every packet back with an OK byte (`0x55`). These are instant receipts, not a "ready" signal, so the app doesn't wait for them.
 - **Album art** uses Spotify's 300px cover, downscaled to 160px through the [weserv.nl](https://images.weserv.nl) image proxy (needed so the canvas can read the pixels).
 - **Caching:** each cover is downloaded once per track and kept in memory (last 8 covers) along with its colour palette, so refreshes don't re-download it. The cache lives only while the page is open.
 - **Ambient colours** are picked by sampling the cover at 32×32, grouping similar colours, and favouring common, saturated ones. They're then darkened for the gradient so white text stays readable.
 - **Dithering:** a 4×4 ordered dither is applied during the RGB565 conversion to avoid visible banding on gradients.
+
+---
+
+## Troubleshooting
+
+Turn on **Debug messages** in the Log card first — it shows exactly what the page is doing.
+
+- **Screen is white or didn't update:** click **Push Now**. If it keeps happening, look in the log for `packet(s) timed out` or pushes marked `(incomplete)`.
+- **"Could not find screen interface":** unplug the keyboard, plug it back in, and click **Connect Keyboard** again.
+- **Screen shows the keyboard's default image after replugging:** expected — frames live in the keyboard's memory only and aren't saved. Click **Connect Keyboard** again.
+- **"Album art failed to load":** the image proxy didn't respond; it retries on the next check. The screen shows a grey square meanwhile.
+- **Logged out / "Refresh failed":** click **Login with Spotify** again, then reconnect the keyboard (the login redirect drops the keyboard connection).
 
 ---
 
